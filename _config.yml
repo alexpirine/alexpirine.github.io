@@ -1,0 +1,9 @@
+# Site settings
+title: Développement web, Full-Stack
+email: as@netica.fr
+baseurl: "" # the subpath of your site, e.g. /blog
+url: "http://as.netica.fr" # the base hostname & protocol for your site
+github_username:  alexpirine
+
+# Build settings
+markdown: kramdown
