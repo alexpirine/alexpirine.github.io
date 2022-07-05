@@ -1,0 +1,215 @@
+<html>
+<head>
+  <script>
+    const MIN_FREQ = 500
+    const MAX_FREQ = 500 * 15
+    const START_FREQ = MIN_FREQ / 2
+    const FREQ_STEP = 250
+    const SYMBOL_DURATION = 0.2
+    const RX_SAMPLES_PER_SYMBOL = 10
+
+    const SAMPLE_RATE = 51200
+    const FFT_SIZE = 4096
+    const FFT_FREQ_STEP = SAMPLE_RATE / FFT_SIZE
+
+    let inputEl, outputEl
+    let canvas, canvasCtx
+    let ctx, gain
+
+    const init = function() {
+      // inputs
+      inputEl = document.getElementById('data')
+      outputEl = document.getElementById('result')
+
+      // paints canvas
+      canvas = document.createElement('canvas')
+      canvas.style.position = 'absolute'
+      canvas.style.top = 100
+      canvas.style.left = 0
+      canvas.width = window.innerWidth
+      canvas.height = window.innerHeight - 100
+      document.body.appendChild(canvas)
+
+      canvasCtx = canvas.getContext('2d')
+      canvasCtx.clearRect(0, 0, canvas.width, canvas.height)
+      // paints canvas black
+      canvasCtx.fillStyle = 'rgb(0, 0, 0)'
+      canvasCtx.fillRect(0, 0, canvas.width, canvas.height)
+      // paints canvas black
+      canvasCtx.fillStyle = 'rgb(255, 0, 0)'
+      canvasCtx.fillRect(0, 0, 100, 100)
+
+      // initializes audio
+      ctx = new AudioContext({
+        sampleRate: SAMPLE_RATE,
+      })
+      gain = ctx.createGain()
+      gain.connect(ctx.destination)
+
+      let analyser = ctx.createAnalyser()
+      analyser.fftSize = FFT_SIZE
+      analyser.smoothingTimeConstant = 0
+      setInterval(() => {
+        let data = new Float32Array(analyser.frequencyBinCount)
+        analyser.getFloatFrequencyData(data)
+        drawFrequencies(data)
+      }, SYMBOL_DURATION / RX_SAMPLES_PER_SYMBOL * 1000)
+      gain.connect(analyser)
+
+      navigator.mediaDevices.getUserMedia(
+        {video: false, audio: true}
+      ).then((stream) => {
+          console.log('stream', stream)
+          let audioInput = ctx.createMediaStreamSource(stream)
+          audioInput.connect(analyser)
+        }
+      )
+    }
+
+    sendData = function() {
+      const dataText = inputEl.value
+      const encoder = new TextEncoder()
+      const dataBytes = encoder.encode(dataText)
+      const dataSymbols = []
+      for (let i = 0; i < dataBytes.length; i++) {
+        const byte = dataBytes[i]
+        const symbol1 = byte >> 4
+        const symbol2 = byte & 0x0f
+        dataSymbols.push(symbol1)
+        dataSymbols.push(symbol2)
+      }
+      playSymbols(dataSymbols)
+    }
+
+    mostFrequent = function(data) {
+      if (data.length === 0) {
+        return 0
+      }
+
+      let counters = {}
+      for (let i = 0; i < data.length; i++) {
+        const value = data[i]
+        if (counters[value] === undefined) {
+          counters[value] = 0
+        }
+        counters[value]++
+      }
+
+      return Object.keys(counters).reduce((a, b) => {
+        return counters[a] > counters[b] ? a : b
+      })
+    }
+
+    indexOfMax = function(data) {
+      if (data.length === 0) {
+        return -1
+      }
+
+      let max = data[0]
+      let maxIndex = 0
+
+      for (let i = 1; i < data.length; i++) {
+        if (data[i] > max) {
+          maxIndex = i
+          max = data[i]
+        }
+      }
+
+      return maxIndex
+    }
+
+    playSymbols = function(symbols) {
+      const oscillator = ctx.createOscillator()
+      oscillator.type = 'sine'
+      oscillator.connect(gain)
+      oscillator.frequency.value = MIN_FREQ / 2
+      oscillator.start()
+
+      symbols.push(-1.5)
+      window.setTimeout(() => {
+        let scheduler = window.setInterval(() => {
+          let symbol = symbols.shift()
+          if (symbol === undefined) {
+            window.clearInterval(scheduler)
+            oscillator.stop()
+            return
+          }
+          oscillator.frequency.value = MIN_FREQ + FREQ_STEP * symbol
+        }, SYMBOL_DURATION * 1000)
+      }, 2 * SYMBOL_DURATION * 1000)
+    }
+
+    let isReceiving = false
+    let receivedSamples, receivedSymbols, leftToIgnore
+
+    drawFrequencies = function(data) {
+      const mainFrequency = FFT_FREQ_STEP * indexOfMax(data)
+      console.log("Frequency: " + mainFrequency + " Hz")
+      if (!isReceiving && mainFrequency == START_FREQ) {
+        console.log("Started receiving")
+        outputEl.value = "Receiving…"
+        isReceiving = true
+        receivedSamples = []
+        receivedSymbols = []
+        leftToIgnore = RX_SAMPLES_PER_SYMBOL * 3
+      }
+      if (isReceiving) {
+        leftToIgnore--
+        if (leftToIgnore == 0) {
+          outputEl.value = ''
+        }
+        else if (leftToIgnore >= 0) {
+          return
+        }
+        receivedSamples.push(mainFrequency)
+        if (receivedSamples.length >= RX_SAMPLES_PER_SYMBOL) {
+          let mostFrequentFrequency = mostFrequent(receivedSamples)
+          console.log("Most frequent frequency: " + mostFrequentFrequency + " Hz")
+          console.log(receivedSamples)
+          receivedSamples = []
+          if (mostFrequentFrequency < MIN_FREQ || mostFrequentFrequency > MAX_FREQ) {
+            isReceiving = false
+            return
+          }
+          receivedSymbols.push(Math.round((mostFrequentFrequency - MIN_FREQ) / FREQ_STEP))
+          if (receivedSymbols.length >= 2) {
+            const dataByte = receivedSymbols[0] << 4 | receivedSymbols[1]
+            const decoder = new TextDecoder()
+            const dataText = decoder.decode(new Uint8Array([dataByte]))
+            outputEl.value += dataText
+            receivedSymbols = []
+            console.log("Decoded", dataText)
+          }
+        }
+      }
+
+      window.requestAnimationFrame(() => {
+        // paints canvas black
+        canvasCtx.fillStyle = 'rgb(0, 0, 0)'
+        canvasCtx.fillRect(0, 0, canvas.width, canvas.height)
+        // draws spectrum
+        const barWidth = canvas.width / data.length
+        let posX = 0
+        for (let i = 0; i < data.length; i++) {
+          let barHeight = Math.max(0, data[i] + canvas.height)
+          canvasCtx.fillStyle = 'rgb(255, 0, 0)'
+          let [x, y, w, h] = [posX, canvas.height - barHeight, barWidth, barHeight]
+          canvasCtx.fillRect(x, y, w, h)
+          posX += barWidth + 1
+        }
+      })
+    }
+  </script>
+</head>
+<body>
+  <button type="button" onclick="init()">Initialize</button>
+  <button type="button" onclick="window.location.reload()">Reset</button>
+  <br/>
+  <input type="text" id="data" autofocus />
+  <button type="button" onClick="sendData()">
+    send data
+  </button>
+  <br/>
+  <input type="text" id="result" readonly />
+</body>
+</html>
